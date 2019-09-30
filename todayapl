@@ -1,0 +1,191 @@
+library(shiny)
+library(shinydashboard)
+library(ggplot2)
+library(dplyr)
+library(MARX)
+library(purrr)
+library(scales)
+library(plotly)
+data <- MARX::dataset
+
+#Sidebar content of the 
+
+
+frow1 <- fluidRow(  valueBoxOutput("value1")  ,valueBoxOutput("value2")   ,valueBoxOutput("value3"))
+
+
+textt<-"Purely noncausal or causal models with additional regressors have the appealing feature to be (potentially) identifiable under Gaussianity, while the MAR parameters are not. By means of Monte
+Carlo simulations, we evaluate the performance of the ML estimator and a proposed model
+selection for the MARX model based on information criteria."
+
+
+frow2<-fluidRow(box(    title = "Revenue per Product"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("revenuebyRegion", height = "300px") ,width = "300%" ) )
+frow3<-fluidRow(box(    title = "Simulation of Y Non Causal"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("simulationNC", height = "300px"),width = "300%"  ) )
+frow4<-fluidRow(box(    title = "Simulation of Y Causal"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("simulationC", height = "300px") ,width = "300%" ) )
+frow5<-fluidRow(box(    title = "commodity"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotlyOutput("commodity", height = "300px"),width = "300%"  ) )
+frow6<-fluidRow(box(    title = "Trade Rate"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("traderate", height = "300px"),width = "300%"  ) )
+frowf<-fluidRow(box(    title = "Forecast"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("forecast", height = "300px"),width = "300%"  ) )
+frowLag<-fluidRow(box(    title = "Lag"    ,status = "primary"    ,solidHeader = TRUE     ,collapsible = TRUE     ,plotOutput("forecast", height = "300px"),width = "300%"  ) )
+frowT<-fluidRow(title="Purely Causal and Non Causal",textOutput(purely, container = if (inline) span else div,inline = FALSE))
+# combine the two fluid rows to make the 
+bodybody <- dashboardBody(tabItems(
+  # First tab content
+  tabItem(tabName ="dstable",numericInput("bet", "beta:",min = -1, max = 1, value = 0),
+          numericInput("alph", "alpha:",min = 0, max = 2, value = 0.5),
+          numericInput("gamm", "gamma:", min = -1, max = 1, value = 1),
+          checkboxInput("Gaussian", "Gaussian",value=FALSE),
+          checkboxInput("Cauchy", "Cauchy",value=FALSE),
+          checkboxInput("Levy", "Lévy",value=FALSE),
+          frow2 ),
+  tabItem(tabName = "dels", h2("Widgets tab content")  ),
+  tabItem(tabName = "NonCausalAR",numericInput("rho","Rho:",min=-1,max=1,value=0.9),
+                                  numericInput("mu","mu:",value=1),
+                                  numericInput("sigma","sigma:",value=1),
+                                  selectInput(inputId="epsilon", label="Epsilon:", choices=c('t','normal','stable'), selected = NULL, multiple = FALSE,selectize = TRUE, width = NULL, size = NULL),
+                                  helpText(textt),
+                                  frow3,frow4),
+  tabItem(tabName = "Commo",selectInput(inputId="securities", label="Chose a commodity:", choices=colnames(data[,-1]), selected = NULL, multiple = FALSE,selectize = TRUE, width = NULL, size = NULL),frow5,frow6),
+  tabItem(tabName="forecast",numericInput("N_C", "Causal Lag:", value = 0),
+          numericInput("N_NC", "NonCausal Lag:", value = 1),
+          numericInput("h", "Forecast Horizon", value = 5),frowf,
+          downloadLink('dataForecast', 'Download Forecast')),
+  tabItem(tabName = "LagSelection",frow1,numericInput("N_AR_p", "Number of AutoRegressive terms", value = 6))
+) )
+
+
+ui <-dashboardPage(   dashboardHeader(title = "NonCausal Processes" ), 
+                      skin="blue",
+                      dashboardSidebar(sidebarMenu(   
+                        menuItem("Causal vs Non Causal AR",tabName = "NonCausalAR"),
+                          
+                        menuItem("Read the code", icon = icon("send",lib='glyphicon'),              href = "https://www.salesforce.com"),
+                        menuItem("Deuxieme onglet",tabName="dels"),
+                        
+                        menuItem("Commodity Price Application",tabName = "Commo"),
+                        menuItem("Forecast",tabName ="forecast",icon=icon("calendar") ),
+                        menuItem("Lag",tabName = "LagSelection"),
+                        menuItem("Stable Densities", tabName = "dstable")
+                        
+                      )),
+                      dashboardBody(bodybody))
+
+
+
+
+
+# create the server functions for the dashboard  
+server <- function(input, output,session) {   
+  
+  observeEvent(input$Gaussian==TRUE,{updateNumericInput(session=session,inputId = "alph", value = 2)})
+  observeEvent(input$Cauchy==TRUE,{updateNumericInput(session=session,inputId = "alph", value = 1)
+    updateNumericInput(session=session,inputId = "bet", value = 0)})
+  observeEvent(input$Levy==TRUE,{updateNumericInput(session=session,inputId = "alph", value = 0.5)
+    updateNumericInput(session=session,inputId = "bet", value = 1)
+    updateNumericInput(session=session,inputId = "gamm", value = 1)})
+  
+  output$revenuebyRegion <- renderPlot({    
+    
+    x = seq(-4, 4, by = 0.01)
+    beta = seq(input$bet, input$bet, by = 0.25) %>% setNames(., .)
+    
+    data = map_dfr(
+      beta, .id = 'beta',
+      ~ list(x = x, y = stabledist::dstable(x, alpha=input$alph, .x,input$gamm, pm = 1)),
+    )
+    
+    ggplot(data) +
+      aes(x, y) +
+      geom_path()  
+  })
+  
+  
+  output$simulationNC <- renderPlot({  
+    dist.eps <- c(input$epsilon,input$mu,input$sigma) ## t-distributed errors with 1 degree of freedom and scale parameter 1
+    dist.x <- NULL ## standard normally distributed x variable exogenous
+    obs <- 1000
+    c_par <- 0 #vector of causal parameters
+    #vector of noncausal parameters.
+    exo_par <- 0 #Parameter of the exogenous variable.
+    a<-sim.marx(dist.eps,dist.x,obs,c_par,nc_par=input$rho,exo_par) ## Simulates a MARX(2,1,0) process
+    ts.plot(a$y)
+  })
+  
+  output$simulationC <- renderPlot({  
+    dist.eps <- c(input$epsilon,input$mu,input$sigma) ## t-distributed errors with 1 degree of freedom and scale parameter 1
+    dist.x <- NULL ## standard normally distributed x variable exogenous
+    obs <- 1000
+    c_par <- 0 #vector of causal parameters
+    #vector of noncausal parameters.
+    exo_par <- 0 #Parameter of the exogenous variable.
+    a<-sim.marx(dist.eps,dist.x,obs,c_par=input$rho,nc_par=0,exo_par) ## Simulates a MARX(2,1,0) process
+    ts.plot(a$y)
+  })
+  
+  data <- MARX::dataset
+  output$commodity <- renderPlotly({  
+    p <- plot_ly(data) %>%
+      add_trace(x = ~X_date_, y = data[,input$securities], type = 'scatter', mode = 'lines', name = 'Wind',
+                marker = list(color = '#991F36'),
+                hoverinfo = "text",
+                text = ~paste(input$securities, '')) %>%
+
+      layout(title = '',
+             xaxis = list(title = ""),
+             yaxis = list(side = 'left', title = '', showgrid = FALSE, zeroline = FALSE))
+    
+    
+  })
+  
+  
+  output$traderate <- renderPlot({  
+    
+    ts.plot(data[,8])
+  })
+  
+  
+  
+  
+  output$forecast<- renderPlot({  
+    y.for <- forecast.marx(y=data[,input$securities], p_C=input$N_C, p_NC=input$N_NC, h=input$h, M=50, N=1000)
+    ts.plot(y.for)
+  })
+  
+  output$dataForecast <- downloadHandler(
+    filename = function() {
+      paste('data-', Sys.Date(), '.csv', sep='')
+    },
+    content = function(con) {
+      write.csv(y.for, con)
+    }
+  )
+  
+  
+
+  output$value1 <- renderValueBox({   
+    
+    lagsel<-selection.lag.lead(data[,input$securities],data[,8], input$N_AR_p)
+    #lagsel$p.C<-str(lagsel$p.C)
+    
+    valueBox(     lagsel$p.C     ,"Number of Causal lags"      ,icon = icon("stats",lib='glyphicon')      ,color = "purple")    })
+  
+output$value2 <- renderValueBox({   
+    
+    lagselnc<-selection.lag.lead(data[,input$securities],data[,8], input$N_AR_p)
+
+    
+    valueBox(     lagselnc$p.NC     ,"Number of NonCausal lags"      ,icon = icon("stats",lib='glyphicon')      ,color = "purple")    })
+  
+output$value3 <- renderValueBox({   
+  
+  lagllh<-selection.lag.lead(data[,input$securities],data[,8], input$N_AR_p)
+  
+  
+  valueBox(     lagllh$loglikelihood     ,"loglikelihood"      ,icon = icon("stats",lib='glyphicon')      ,color = "purple")    })
+
+
+  
+}
+
+
+
+shinyApp(ui, server)
